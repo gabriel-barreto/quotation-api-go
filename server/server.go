@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -98,12 +99,25 @@ func getCurrentQuotation() (*Quotation, error) {
 	return createQuotation(quotationResponse)
 }
 
+func getQuotation(db *gorm.DB) (*Quotation, error) {
+	dbQuotation := &Quotation{}
+	queryResult := db.Model(dbQuotation).Where("timestamp >= strftime('%s', datetime('now', 'localtime', 'start of day'))").Find(&dbQuotation)
+	fmt.Println(queryResult.RowsAffected, queryResult.Error)
+	if queryResult.Error != nil {
+		return dbQuotation, queryResult.Error
+	}
+	if queryResult.RowsAffected == 1 {
+		return dbQuotation, nil
+	}
+	return getCurrentQuotation()
+}
+
 func Perform() {
 	db, err := setupDB()
 	if err != nil {
 		log.Fatalf("Error while trying to connect with the database (%s)", err)
 	}
-	currentQuotation, err := getCurrentQuotation()
+	currentQuotation, err := getQuotation(db)
 	if err != nil {
 		log.Fatalf("Error while trying to get the current quotation: %s", err)
 	}
@@ -112,8 +126,4 @@ func Perform() {
 		log.Fatalf("Error while trying to store the current quotation: %s", err)
 	}
 	log.Println(currentQuotation)
-
-	// TODO wrap the request in a timeout context (200ms)
-	// TODO wrap the storage in a timeout context (10ms)
-	// TODO Add a cache layer to read directly from the DB if is the same day
 }
