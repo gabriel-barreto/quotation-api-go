@@ -132,6 +132,9 @@ func getQuotingController(w http.ResponseWriter, r *http.Request) {
 func Start() {
 	log.Println("Starting server")
 	mux := http.NewServeMux()
-	mux.HandleFunc("/quote", getQuotingController)
-	http.ListenAndServe(":3000", mux)
+	mux.HandleFunc(
+		os.Getenv("SERVER_QUOTING_ENDPOINT_PATH"),
+		getQuotingController,
+	)
+	http.ListenAndServe(os.Getenv("SERVER_API_PORT"), mux)
 }
