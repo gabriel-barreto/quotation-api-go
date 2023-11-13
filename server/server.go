@@ -3,41 +3,28 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
 	"time"
 
+	"github.com/gabriel-barreto/go-quoting-api/shared/models"
 	"github.com/google/uuid"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
-type Quotation struct {
-	ID        string `gorm:"primaryKey"`
-	Value     float64
-	Timestamp int64 `gorm:"index"`
-}
-
-type QuotationResponse struct {
-	USDBRL struct {
-		Value     string `json:"ask"`
-		Timestamp string `json"timestamp"`
-	}
-}
-
-func createQuotation(r QuotationResponse) (*Quotation, error) {
-	value, err := strconv.ParseFloat(r.USDBRL.Value, 0)
+func createQuotation(r models.QuotationResponse) (*models.Quotation, error) {
+	value, err := strconv.ParseFloat(r.USDBRL.Value, 32)
 	if err != nil {
-		return &Quotation{}, nil
+		return &models.Quotation{}, nil
 	}
 	timestamp, err := strconv.ParseInt(r.USDBRL.Timestamp, 10, 0)
 	if err != nil {
-		return &Quotation{}, nil
+		return &models.Quotation{}, nil
 	}
-	return &Quotation{
+	return &models.Quotation{
 		ID:        uuid.New().String(),
 		Value:     value,
 		Timestamp: timestamp,
@@ -50,17 +37,17 @@ func setupDB() (*gorm.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	db.AutoMigrate(&Quotation{})
+	db.AutoMigrate(&models.Quotation{})
 	return db, err
 }
 
-func saveQuotation(db *gorm.DB, quotation *Quotation) (*Quotation, error) {
+func saveQuotation(db *gorm.DB, quotation *models.Quotation) (*models.Quotation, error) {
 	// instantiating context
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
 	// check for the same timestamp
-	existingQuotation := Quotation{}
+	existingQuotation := models.Quotation{}
 	res := db.
 		WithContext(ctx).
 		Model(existingQuotation).
@@ -78,31 +65,30 @@ func saveQuotation(db *gorm.DB, quotation *Quotation) (*Quotation, error) {
 	return quotation, err
 }
 
-func getCurrentQuotation() (*Quotation, error) {
+func getCurrentQuotation() (*models.Quotation, error) {
 	url := os.Getenv("QUOTING_API_URL")
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		return &Quotation{}, err
+		return &models.Quotation{}, err
 	}
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return &Quotation{}, err
+		return &models.Quotation{}, err
 	}
 	defer res.Body.Close()
-	var quotationResponse QuotationResponse
+	var quotationResponse models.QuotationResponse
 	err = json.NewDecoder(res.Body).Decode(&quotationResponse)
 	if err != nil {
-		return &Quotation{}, err
+		return &models.Quotation{}, err
 	}
 	return createQuotation(quotationResponse)
 }
 
-func getQuotation(db *gorm.DB) (*Quotation, error) {
-	dbQuotation := &Quotation{}
+func getQuotation(db *gorm.DB) (*models.Quotation, error) {
+	dbQuotation := &models.Quotation{}
 	queryResult := db.Model(dbQuotation).Where("timestamp >= strftime('%s', datetime('now', 'localtime', 'start of day'))").Find(&dbQuotation)
-	fmt.Println(queryResult.RowsAffected, queryResult.Error)
 	if queryResult.Error != nil {
 		return dbQuotation, queryResult.Error
 	}
@@ -112,18 +98,40 @@ func getQuotation(db *gorm.DB) (*Quotation, error) {
 	return getCurrentQuotation()
 }
 
-func Perform() {
+func perform() (*models.Quotation, error) {
 	db, err := setupDB()
 	if err != nil {
-		log.Fatalf("Error while trying to connect with the database (%s)", err)
+		return &models.Quotation{}, err
 	}
 	currentQuotation, err := getQuotation(db)
 	if err != nil {
-		log.Fatalf("Error while trying to get the current quotation: %s", err)
+		return &models.Quotation{}, err
 	}
 	currentQuotation, err = saveQuotation(db, currentQuotation)
 	if err != nil {
-		log.Fatalf("Error while trying to store the current quotation: %s", err)
+		return &models.Quotation{}, err
 	}
-	log.Println(currentQuotation)
+	return currentQuotation, err
+}
+
+func getQuotingController(w http.ResponseWriter, r *http.Request) {
+	log.Println("Received HTTP request")
+	quotation, err := perform()
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		log.Println("Finished quotation perform\nError =>", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(err)
+		return
+	}
+	log.Println("Finished quotation perform\nCurrent quotation =>", quotation)
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(quotation)
+}
+
+func Start() {
+	log.Println("Starting server")
+	mux := http.NewServeMux()
+	mux.HandleFunc("/quote", getQuotingController)
+	http.ListenAndServe(":3000", mux)
 }
